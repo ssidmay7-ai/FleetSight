@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FleetSight Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root { --navy:#16324F; --teal:#1C7293; --amber:#F2994A; --ink:#1B2430; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#F4F7FA; }
+  header { background:var(--navy); color:#fff; padding:14px 20px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:18px; margin:0; }
+  #layout { display:flex; height:calc(100vh - 54px); }
+  #map { flex:1; }
+  #sidebar { width:340px; background:#fff; border-left:1px solid #e3e8ed; overflow-y:auto; }
+  .event-card { padding:12px 16px; border-bottom:1px solid #eef1f4; cursor:pointer; }
+  .event-card:hover { background:#F4F7FA; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; color:#fff; }
+  .badge.pothole { background:var(--amber); }
+  .badge.vehicle_density { background:var(--teal); }
+  .badge.incident { background:#C0453A; }
+  .status { font-size:11px; color:#5B6B79; }
+  .persistent-tag { background:#C0453A; color:#fff; font-size:10px; padding:1px 6px; border-radius:8px; margin-left:6px; }
+  button.resolve { background:var(--teal); color:#fff; border:none; padding:4px 10px; border-radius:6px; font-size:11px; cursor:pointer; margin-top:6px; }
+  #stats { display:flex; gap:16px; padding:10px 20px; background:#fff; border-bottom:1px solid #e3e8ed; font-size:13px; color:var(--ink); }
+  #stats b { color:var(--navy); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FleetSight — Live Urban Intelligence Dashboard</h1>
+  <span id="refresh-status" style="font-size:12px;opacity:.8;">connecting...</span>
+</header>
+
+<div id="stats"></div>
+
+<div id="layout">
+  <div id="map"></div>
+  <div id="sidebar"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API_BASE = "http://localhost:8000"; // change if your backend runs elsewhere
+
+const map = L.map('map').setView([13.0827, 80.2707], 15);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+let markers = {};
+
+function colorFor(type) {
+  if (type === 'pothole') return '#F2994A';
+  if (type === 'incident') return '#C0453A';
+  if (type === 'vehicle_density') return '#1C7293';
+  return '#5B6B79';
+}
+
+function renderSidebarCard(ev) {
+  const div = document.createElement('div');
+  div.className = 'event-card';
+  div.innerHTML = `
+    <span class="badge ${ev.type}">${ev.type.toUpperCase()}</span>
+    ${ev.persistent ? '<span class="persistent-tag">PERSISTENT</span>' : ''}
+    <div style="margin-top:6px;font-weight:600;">${ev.id}</div>
+    <div class="status">
+      Bus: ${ev.bus_id} · Obs: ${ev.observation_count} · Confidence: ${(ev.event_confidence*100).toFixed(0)}%
+      <br>Status: ${ev.status}
+    </div>
+    ${ev.status !== 'resolved' ? `<button class="resolve" onclick="resolveEvent('${ev.id}')">Mark Resolved</button>` : ''}
+  `;
+  div.onclick = () => map.setView([ev.lat, ev.lon], 17);
+  return div;
+}
+
+async function resolveEvent(id) {
+  await fetch(`${API_BASE}/events/${id}/status`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({status: 'resolved'})
+  });
+  loadEvents();
+}
+window.resolveEvent = resolveEvent;
+
+async function loadEvents() {
+  try {
+    const res = await fetch(`${API_BASE}/events`);
+    const events = await res.json();
+    document.getElementById('refresh-status').innerText = `live · ${events.length} events`;
+
+    // clear old markers
+    Object.values(markers).forEach(m => map.removeLayer(m));
+    markers = {};
+
+    const sidebar = document.getElementById('sidebar');
+    sidebar.innerHTML = '';
+
+    let persistentCount = 0, activeCount = 0;
+    events.forEach(ev => {
+      if (ev.persistent) persistentCount++;
+      if (ev.status === 'active') activeCount++;
+
+      const marker = L.circleMarker([ev.lat, ev.lon], {
+        radius: 8 + Math.min(ev.observation_count, 5),
+        color: colorFor(ev.type),
+        fillColor: colorFor(ev.type),
+        fillOpacity: 0.7
+      }).addTo(map);
+      marker.bindPopup(`
+        <b>${ev.type}</b><br>
+        Confidence: ${(ev.event_confidence*100).toFixed(0)}%<br>
+        Observations: ${ev.observation_count}<br>
+        ${ev.persistent ? '<b style="color:#C0453A">PERSISTENT ISSUE</b><br>' : ''}
+        Status: ${ev.status}
+      `);
+      markers[ev.id] = marker;
+
+      sidebar.appendChild(renderSidebarCard(ev));
+    });
+
+    document.getElementById('stats').innerHTML = `
+      <span>Total events: <b>${events.length}</b></span>
+      <span>Active: <b>${activeCount}</b></span>
+      <span>Persistent: <b>${persistentCount}</b></span>
+    `;
+  } catch (e) {
+    document.getElementById('refresh-status').innerText = 'backend unreachable';
+  }
+}
+
+loadEvents();
+setInterval(loadEvents, 4000); // poll every 4s so the demo feels live
+</script>
+</body>
+</html>
